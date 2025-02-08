@@ -1,0 +1,85 @@
+import torch
+import torch.nn as nn
+from torchvision import transforms
+import numpy as np
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor
+import cv2
+import torchvision.utils as vutils  # Импортируем для сохранения изображений с GPU
+
+# Устройство для вычислений
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Используем устройство: {device}")
+
+# Установка типа тензоров по умолчанию
+torch.set_default_tensor_type('torch.cuda.FloatTensor')
+
+# Определение модели
+NewCNN = nn.Sequential(
+    nn.Conv2d(3, 3, 3, 1, padding=1),
+    nn.ReLU(),
+).to(device).half()
+
+model = NewCNN.to(device).half()  # Используем FP16 для модели
+
+# Загрузка весов модели
+state_dict_path = "C:/model_weights.pth"
+if not os.path.exists(state_dict_path):
+    print(f"Файл весов {state_dict_path} не найден!")
+    exit()
+
+state_dict = torch.load(state_dict_path, map_location=device, weights_only=True)
+model.load_state_dict(state_dict, strict=False)
+
+# Папка с изображениями
+screenshot_folder = "C:/screenshots"
+if not os.path.exists(screenshot_folder):
+    print(f"Папка {screenshot_folder} не существует!")
+    exit()
+image_paths = [os.path.join(screenshot_folder, f) for f in os.listdir(screenshot_folder) if f.endswith(".jpeg")]
+
+if not image_paths:
+    print("Не найдено изображений в папке!")
+    exit()
+
+# Параметры обработки
+batch_size = 120
+max_images_to_load = batch_size  # Максимальное количество изображений для загрузки
+
+# Функция для загрузки и преобразования изображения
+def load_and_transform(image_path):
+    image = cv2.imread(image_path)  # OpenCV загружает BGR
+    image = torch.from_numpy(cv2.cvtColor(image, cv2.COLOR_BGR2RGB)).permute(2, 0, 1).to(device).float() / 255.0
+    return image.half()  # Перемещение сразу на GPU
+
+starttime = time.time()
+
+# Функция для обработки и сохранения одного изображения
+def process_and_save(image_path, idx):
+    for i in range(3):
+        # Загрузка и преобразование изображения
+        image_tensor = load_and_transform(image_path)
+
+        # Инференс
+        model.eval()
+        with torch.no_grad():
+            output = model(image_tensor.unsqueeze(0))
+
+        # Подготовка изображения для сохранения
+        output = output.cpu().detach().numpy().squeeze().transpose(1, 2, 0)
+        img = np.clip(output * 255, 0, 255).astype(np.uint8)
+
+        # Преобразование обратно в BGR для сохранения с OpenCV
+        img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        
+        # Сохранение изображения
+        result_path = f"C:/photoes/result_{idx + 1}.jpeg"
+        cv2.imwrite(result_path, img_bgr)
+
+# Параллельная обработка и сохранение
+with ThreadPoolExecutor(max_workers=16) as executor:
+    executor.map(process_and_save, image_paths[:max_images_to_load], range(len(image_paths)))
+
+print("Время выполнения:", time.time() - starttime)
+
